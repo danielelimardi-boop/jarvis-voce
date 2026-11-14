@@ -12,6 +12,8 @@ button{margin:14px 0;padding:14px 26px;font:600 18px system-ui,sans-serif;color:
 button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infinite}
 @keyframes p{50%{opacity:.55}}
 #st{margin:0;color:#7aa3ba;font-size:15px}
+.m{display:block;margin-top:12px;font-size:15px;color:#7aa3ba}select{margin-left:6px;padding:6px 8px;color:#d6f1ff;background:#06141f;border:1px solid rgba(63,208,255,.4);font:inherit}
+.nota{margin:8px 0 0;color:#7aa3ba;font-size:13px}
 #tr{min-height:3em;margin:0;color:#fff}
 :focus-visible{outline:2px solid #f2b632;outline-offset:2px}
 </style>
@@ -19,24 +21,51 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
 <body>
 <main>
   <h1>MICROFONO DI JARVIS</h1>
-  <p id="st">Prema «Avvia ascolto» una volta e parli, Signore: l'ascolto riprende da solo dopo ogni risposta. Prema «Termina ascolto» quando ha finito.</p>
+  <p id="st">Scelga la modalità e prema «Avvia ascolto», Signore. Lasci questa finestra aperta: l’ascolto riprende da solo dopo ogni risposta.</p>
+  <label class="m">Modalità <select id="m"><option value="attesa">In attesa di «Ciao Jarvis»</option><option value="attivo">Sempre in ascolto</option></select></label>
   <button id="b" type="button">Avvia ascolto</button>
   <p id="tr" aria-live="polite"></p>
+  <p class="nota">In attesa, il microfono resta acceso e l’audio è elaborato dal servizio vocale del browser (Google per Chrome, Apple per Safari). «Termina ascolto» lo spegne.</p>
 </main>
 <script>
 (function () {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var opener = window.opener, rec = null, gen = 0;
-  var on = false, pausa = false, ascolto = false, tAttesa = null, tSicurezza = null;
-  var b = document.getElementById('b'), st = document.getElementById('st'), tr = document.getElementById('tr');
+  var WAKE = /\b(ciao|ehi|ei|hey|salve)\s+(j|g)(i|e)?[ae]r\w*/i;   // "ciao Jarvis" e le varianti che il riconoscimento scrive (Giarvis, Garvis...)
+  var STOP = /\b(arrivederci|a dopo|torna in attesa|basta così|basta cosi)\b/i;
+  var IDLE = 25000;   // dopo 25 s di silenzio torna in attesa
+  var on = false, stato = 'spento', pausa = false, ascolto = false;
+  var tAttesa = null, tSicurezza = null, tIdle = null, idleAttivo = false;
+  var b = document.getElementById('b'), st = document.getElementById('st'), tr = document.getElementById('tr'), m = document.getElementById('m');
 
   function dire(t) { st.textContent = t; }
-  function invia(testo, finale) {
-    if (opener) opener.postMessage({ jarvisVoce: true, finale: finale, testo: testo }, '*');
-  }
+  function manda(o) { if (opener) { o.jarvisVoce = true; opener.postMessage(o, '*'); } }
   function azzera() { clearTimeout(tAttesa); clearTimeout(tSicurezza); }
   function metti(v) { ascolto = v; b.classList.toggle('on', v); }
   function ferma() { gen++; metti(false); if (rec) { try { rec.abort(); } catch (x) {} } }
+  function testoStato() { return !on ? 'Ascolto terminato.' : stato === 'attesa' ? 'In attesa: dica «Ciao Jarvis».' : 'In ascolto…'; }
+  function cambia(s) { stato = s; manda({ stato: s }); }
+  function fermaIdle() { clearTimeout(tIdle); idleAttivo = false; }
+  function attendiIdle() {   // parte una sola volta: i "riprendi" ripetuti non lo azzerano
+    if (idleAttivo || !on || stato !== 'attivo' || m.value !== 'attesa') return;
+    idleAttivo = true; tIdle = setTimeout(standby, IDLE);
+  }
+
+  function standby() {
+    fermaIdle(); pausa = false; azzera(); ferma();
+    cambia('attesa'); dire(testoStato()); setTimeout(avvia, 300);
+  }
+
+  function sveglia(resto) {
+    ferma(); azzera(); fermaIdle(); stato = 'attivo'; pausa = true;
+    if (resto) {   // "Ciao Jarvis, che ore sono?": la domanda parte subito
+      manda({ stato: 'attivo', finale: true, testo: resto });
+      tAttesa = setTimeout(riprendi, 3000); dire('Jarvis sta rispondendo…');
+    } else {
+      manda({ stato: 'attivo', sveglia: true });
+      tAttesa = setTimeout(riprendi, 5000); dire('Sono in ascolto, Signore.');
+    }
+  }
 
   function avvia() {
     if (!SR) { dire('Questo browser non supporta il riconoscimento vocale: usi Chrome o Safari.'); on = false; return; }
@@ -46,25 +75,35 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
     rec = new SR();
     rec.lang = 'it-IT';
     rec.interimResults = true;
-    rec.continuous = false;
-    rec.onstart = function () { if (mio !== gen) return; metti(true); dire('In ascolto…'); };
+    rec.continuous = (stato === 'attesa');
+    rec.onstart = function () { if (mio !== gen) return; metti(true); dire(testoStato()); };
     rec.onresult = function (e) {
       if (mio !== gen) return;
       var t = '';
-      for (var i = e.resultIndex; i < e.results.length; i++) t += e.results[i][0].transcript;
-      tr.textContent = t;
+      for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
       var fin = e.results[e.results.length - 1].isFinal;
-      invia(t, fin);
-      if (fin) {  // frase completa: attendo la risposta di Jarvis senza riascoltare
+      tr.textContent = t;
+      if (stato === 'attesa') {
+        var w = t.match(WAKE);
+        if (w) {
+          if (fin) sveglia(t.slice(w.index + w[0].length).replace(/^[\s,.:;!?\-]+/, '').trim());
+          else dire('«Ciao Jarvis» rilevato…');
+        }
+        return;
+      }
+      fermaIdle();
+      if (fin && STOP.test(t) && m.value === 'attesa') { manda({ testo: '', finale: false }); standby(); return; }
+      manda({ testo: t, finale: fin });
+      if (fin) {
         pausa = true; azzera();
-        tAttesa = setTimeout(riprendi, 3000); // se Jarvis non risponde, riprendo da solo
+        tAttesa = setTimeout(riprendi, 3000);   // se Jarvis non risponde, riprendo da solo
         dire('Jarvis sta rispondendo…');
       }
     };
     rec.onerror = function (e) {
       if (mio !== gen) return;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        on = false; metti(false); b.textContent = 'Avvia ascolto';
+        on = false; metti(false); b.textContent = 'Avvia ascolto'; m.disabled = false; cambia('spento');
         dire('Accesso al microfono negato: lo consenta nelle impostazioni del browser e in Impostazioni di Sistema, Privacy e sicurezza, Microfono.');
       } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
         dire('Errore: ' + e.error);
@@ -79,17 +118,17 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
   }
 
   function riprendi() {
-    azzera(); pausa = false;
+    azzera(); pausa = false; attendiIdle();
     if (on && !ascolto) setTimeout(avvia, 300);
   }
 
   b.onclick = function () {
     if (on) {
-      on = false; pausa = false; azzera(); ferma();
-      b.textContent = 'Avvia ascolto'; dire('Ascolto terminato.');
+      on = false; pausa = false; azzera(); fermaIdle(); ferma();
+      b.textContent = 'Avvia ascolto'; m.disabled = false; cambia('spento'); dire(testoStato());
     } else {
-      on = true; pausa = false; azzera();
-      b.textContent = 'Termina ascolto'; avvia();
+      on = true; pausa = false; azzera(); m.disabled = true;
+      b.textContent = 'Termina ascolto'; cambia(m.value === 'attesa' ? 'attesa' : 'attivo'); dire(testoStato()); avvia();
     }
   };
 
@@ -98,7 +137,7 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
     var d = e.data;
     if (!d || !d.jarvisCmd) return;
     if (d.jarvisCmd === 'pausa') {
-      pausa = true; azzera(); ferma();
+      pausa = true; azzera(); fermaIdle(); ferma();
       tSicurezza = setTimeout(riprendi, 120000);
       if (on) dire('Jarvis sta rispondendo…');
     }
