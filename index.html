@@ -19,65 +19,90 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
 <body>
 <main>
   <h1>MICROFONO DI JARVIS</h1>
-  <p id="st">Prema il pulsante e parli, Signore. Lasci questa finestra aperta per tutta la conversazione.</p>
+  <p id="st">Prema «Avvia ascolto» una volta e parli, Signore: l'ascolto riprende da solo dopo ogni risposta. Prema «Termina ascolto» quando ha finito.</p>
   <button id="b" type="button">Avvia ascolto</button>
   <p id="tr" aria-live="polite"></p>
 </main>
 <script>
 (function () {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var opener = window.opener, rec = null, on = false, pausa = false, att = false;
+  var opener = window.opener, rec = null, gen = 0;
+  var on = false, pausa = false, ascolto = false, tAttesa = null, tSicurezza = null;
   var b = document.getElementById('b'), st = document.getElementById('st'), tr = document.getElementById('tr');
 
   function dire(t) { st.textContent = t; }
   function invia(testo, finale) {
     if (opener) opener.postMessage({ jarvisVoce: true, finale: finale, testo: testo }, '*');
   }
+  function azzera() { clearTimeout(tAttesa); clearTimeout(tSicurezza); }
+  function metti(v) { ascolto = v; b.classList.toggle('on', v); }
+  function ferma() { gen++; metti(false); if (rec) { try { rec.abort(); } catch (x) {} } }
 
   function avvia() {
     if (!SR) { dire('Questo browser non supporta il riconoscimento vocale: usi Chrome o Safari.'); on = false; return; }
-    if (att) return;
+    if (!on || pausa || ascolto) return;
+    var mio = ++gen;
+    if (rec) { try { rec.abort(); } catch (x) {} }
     rec = new SR();
     rec.lang = 'it-IT';
     rec.interimResults = true;
     rec.continuous = false;
-    rec.onstart = function () { att = true; b.classList.add('on'); dire('In ascolto…'); };
+    rec.onstart = function () { if (mio !== gen) return; metti(true); dire('In ascolto…'); };
     rec.onresult = function (e) {
+      if (mio !== gen) return;
       var t = '';
       for (var i = e.resultIndex; i < e.results.length; i++) t += e.results[i][0].transcript;
       tr.textContent = t;
-      invia(t, e.results[e.results.length - 1].isFinal);
+      var fin = e.results[e.results.length - 1].isFinal;
+      invia(t, fin);
+      if (fin) {  // frase completa: attendo la risposta di Jarvis senza riascoltare
+        pausa = true; azzera();
+        tAttesa = setTimeout(riprendi, 3000); // se Jarvis non risponde, riprendo da solo
+        dire('Jarvis sta rispondendo…');
+      }
     };
     rec.onerror = function (e) {
+      if (mio !== gen) return;
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        on = false; b.classList.remove('on'); b.textContent = 'Avvia ascolto';
+        on = false; metti(false); b.textContent = 'Avvia ascolto';
         dire('Accesso al microfono negato: lo consenta nelle impostazioni del browser e in Impostazioni di Sistema, Privacy e sicurezza, Microfono.');
       } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
         dire('Errore: ' + e.error);
       }
     };
     rec.onend = function () {
-      att = false; b.classList.remove('on');
-      if (on && !pausa) setTimeout(avvia, 250);
+      if (mio !== gen) return;
+      metti(false);
+      if (on && !pausa) setTimeout(avvia, 300);
     };
-    try { rec.start(); } catch (x) { att = false; }
+    try { rec.start(); } catch (x) { metti(false); }
+  }
+
+  function riprendi() {
+    azzera(); pausa = false;
+    if (on && !ascolto) setTimeout(avvia, 300);
   }
 
   b.onclick = function () {
     if (on) {
-      on = false; if (rec) rec.abort();
-      b.textContent = 'Avvia ascolto'; dire('Ascolto fermato.');
+      on = false; pausa = false; azzera(); ferma();
+      b.textContent = 'Avvia ascolto'; dire('Ascolto terminato.');
     } else {
-      on = true; pausa = false; b.textContent = 'Ferma ascolto'; avvia();
+      on = true; pausa = false; azzera();
+      b.textContent = 'Termina ascolto'; avvia();
     }
   };
 
-  // Comandi che arrivano da Jarvis: pausa mentre elabora e parla, ripresa quando ha finito
+  // Comandi da Jarvis: "pausa" mentre elabora e parla, "riprendi" quando ha finito
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || !d.jarvisCmd) return;
-    if (d.jarvisCmd === 'pausa') { pausa = true; if (rec) rec.abort(); if (on) dire('Jarvis sta rispondendo…'); }
-    if (d.jarvisCmd === 'riprendi') { pausa = false; if (on) avvia(); }
+    if (d.jarvisCmd === 'pausa') {
+      pausa = true; azzera(); ferma();
+      tSicurezza = setTimeout(riprendi, 120000);
+      if (on) dire('Jarvis sta rispondendo…');
+    }
+    if (d.jarvisCmd === 'riprendi') riprendi();
   });
 })();
 </script>
