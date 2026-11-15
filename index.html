@@ -14,6 +14,7 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
 #st{margin:0;color:#7aa3ba;font-size:15px}
 .m{display:block;margin-top:12px;font-size:15px;color:#7aa3ba}select{margin-left:6px;padding:6px 8px;color:#d6f1ff;background:#06141f;border:1px solid rgba(63,208,255,.4);font:inherit}
 .nota{margin:8px 0 0;color:#7aa3ba;font-size:13px}
+#co{margin:0 0 10px;font-size:14px}#co.ok{color:#5be3a4}
 #tr{min-height:3em;margin:0;color:#fff}
 :focus-visible{outline:2px solid #f2b632;outline-offset:2px}
 </style>
@@ -21,8 +22,9 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
 <body>
 <main>
   <h1>MICROFONO DI JARVIS</h1>
+  <p id="co" class="nota">Collegamento con Jarvis: verifica…</p>
   <p id="st">Scelga la modalità e prema «Avvia ascolto», Signore. Lasci questa finestra aperta: l’ascolto riprende da solo dopo ogni risposta.</p>
-  <label class="m">Modalità <select id="m"><option value="attesa">In attesa di «Ciao Jarvis»</option><option value="attivo">Sempre in ascolto</option></select></label>
+  <label class="m">Modalità <select id="m"><option value="attivo">Sempre in ascolto</option><option value="attesa">In attesa di «Ciao Jarvis»</option></select></label>
   <button id="b" type="button">Avvia ascolto</button>
   <p id="tr" aria-live="polite"></p>
   <p class="nota">In attesa, il microfono resta acceso e l’audio è elaborato dal servizio vocale del browser (Google per Chrome, Apple per Safari). «Termina ascolto» lo spegne.</p>
@@ -31,15 +33,29 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
 (function () {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var opener = window.opener, rec = null, gen = 0;
-  var WAKE = /\b(ciao|ehi|ei|hey|salve)\s+(j|g)(i|e)?[ae]r\w*/i;   // "ciao Jarvis" e le varianti che il riconoscimento scrive (Giarvis, Garvis...)
+  var WAKE = /\b(ciao|ehi|ei|hey|ok|salve|buongiorno|buonasera)\s+(j|g)(i|e)?[ae]r\w*/i;   // "ciao Jarvis" e le varianti che il riconoscimento scrive (Giarvis, Garvis...)
   var STOP = /\b(arrivederci|a dopo|torna in attesa|basta così|basta cosi)\b/i;
   var IDLE = 25000;   // dopo 25 s di silenzio torna in attesa
   var on = false, stato = 'spento', pausa = false, ascolto = false;
   var tAttesa = null, tSicurezza = null, tIdle = null, idleAttivo = false;
+  var co = document.getElementById('co'), ultimoPong = 0, t0 = Date.now();
   var b = document.getElementById('b'), st = document.getElementById('st'), tr = document.getElementById('tr'), m = document.getElementById('m');
 
   function dire(t) { st.textContent = t; }
   function manda(o) { if (opener) { o.jarvisVoce = true; opener.postMessage(o, '*'); } }
+  // Verifica continua del collegamento con la pagina di Jarvis
+  function link() {
+    var vivo = false;
+    try { vivo = !!opener && !opener.closed; } catch (x) {}
+    var ok = vivo && (Date.now() - ultimoPong < 7000);
+    co.className = ok ? 'nota ok' : 'nota';
+    co.textContent = ok ? 'Collegamento con Jarvis: attivo.'
+      : (vivo && Date.now() - t0 < 6000 ? 'Collegamento con Jarvis: verifica…'
+      : 'Collegamento con Jarvis: NON attivo. Chiuda questa finestra e prema «Parla» in Jarvis.');
+    if (vivo) manda({ ping: true });
+  }
+  setInterval(link, 2000); link();
+
   function azzera() { clearTimeout(tAttesa); clearTimeout(tSicurezza); }
   function metti(v) { ascolto = v; b.classList.toggle('on', v); }
   function ferma() { gen++; metti(false); if (rec) { try { rec.abort(); } catch (x) {} } }
@@ -136,6 +152,7 @@ button.on{color:#f2b632;border-color:#f2b632;animation:p 1.2s ease-in-out infini
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || !d.jarvisCmd) return;
+    if (d.jarvisCmd === 'pong') { ultimoPong = Date.now(); link(); return; }
     if (d.jarvisCmd === 'pausa') {
       pausa = true; azzera(); fermaIdle(); ferma();
       tSicurezza = setTimeout(riprendi, 120000);
